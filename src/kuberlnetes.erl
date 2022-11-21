@@ -129,10 +129,10 @@ cert_from_file(Path) ->
     [{'Certificate', Data, _}] = public_key:pem_decode(BinaryContent),
     Data.
 
-cert_from_b64(CertData) when is_list(CertData) ->
-    DecodedCert = base64:decode(CertData),
-    [{'Certificate', Data, _}] = public_key:pem_decode(DecodedCert),
-    Data.
+% cert_from_b64(CertData) when is_list(CertData) ->
+%     DecodedCert = base64:decode(CertData),
+%     [{'Certificate', Data, _}] = public_key:pem_decode(DecodedCert),
+%     Data.
 
 get_server(Opts) ->
     OptsServer = maps:get(server, Opts, undefined),
