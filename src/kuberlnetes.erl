@@ -6,8 +6,7 @@
 %%%=============================================================================
 -module(kuberlnetes).
 
--export([in_cluster/0, get/2, post/2, patch/2, microtime_now/0]).
--export([from_config/0]).
+-export([in_cluster/0, get/2, post/2, patch/2, microtime_now/0, from_config/0, from_config/1]).
 
 -author("bnjm").
 
@@ -16,21 +15,21 @@
 }.
 
 -type kube_cfg_options() :: #{
-                              %% path to the kube config file
-                              %% defaults to user.home/.kube/config
-                              path => string(),
-                              %% the context to be selected
-                              %% defaults to "current-context"
-                              context => string() 
-                             }.
+    %% path to the kube config file
+    %% defaults to user.home/.kube/config
+    path => string(),
+    %% the context to be selected
+    %% defaults to "current-context"
+    context => string()
+}.
 
 -type mutation_request() :: #{
     path => string(),
     body => map()
 }.
 
-
 -record(auth_token, {token :: binary()}).
+-record(auth_cert, {cert :: binary(), key :: binary()}).
 -record(server, {
     url :: string(),
     ca_cert :: string(),
@@ -57,20 +56,20 @@ in_cluster() ->
 %% @doc
 %% Loads the current-context from ~/.kube/config
 -spec from_config(Options) -> server() when
-      Options :: kube_cfg_options().
+    Options :: kube_cfg_options().
 from_config(Opts) ->
     KubeConfigPath = maps:get(path, Opts, default_kube_cfg_path()),
-    SelectedContext = maps:get(context, Opts, "current-context"),
-   [ KubeConfig | _ ] = yamerl_constr:file(KubeConfigPath),
+    [KubeConfig | _] = yamerl_constr:file(KubeConfigPath),
+    SelectedContext = maps:get(context, Opts, get_current_context(KubeConfig)),
     User = get_relevant_user(SelectedContext, KubeConfig),
     Auth = get_auth(User, KubeConfig),
     Cert = get_certificate(User, KubeConfig),
     Url = get_url(SelectedContext, KubeConfig),
     #server{
-       url = Url,
-       ca_cert = Cert,
-       auth = Auth
-      }.
+        url = Url,
+        ca_cert = Cert,
+        auth = Auth
+    }.
 
 from_config() -> from_config(#{}).
 
@@ -175,7 +174,7 @@ get_server(Opts) ->
 decode(Body) when is_binary(Body) -> jsone:decode(Body);
 decode(Body) when is_list(Body) -> jsone:decode(erlang:list_to_binary(Body)).
 
-get_relevant_user(CurrentContext, KubeConfig) -> 
+get_relevant_user(CurrentContext, KubeConfig) ->
     RelevantContext = get_context_for_name(CurrentContext, KubeConfig),
     RelevantUser = proplists:get_value("user", proplists:get_value("context", RelevantContext)),
     RelevantUser.
@@ -183,7 +182,9 @@ get_relevant_user(CurrentContext, KubeConfig) ->
 %% todo: remove duplication
 get_context_for_name(Name, KubeConfig) when is_list(Name) and is_list(KubeConfig) ->
     AllContexts = proplists:get_value("contexts", KubeConfig),
-    [H | _] = lists:filter(fun(Context) -> proplists:get_value("name", Context) =:= Name end, AllContexts),
+    [H | _] = lists:filter(
+        fun(Context) -> proplists:get_value("name", Context) =:= Name end, AllContexts
+    ),
     H.
 
 find_user(User, KubeConfig) ->
@@ -193,8 +194,14 @@ find_user(User, KubeConfig) ->
 
 get_cluster_for_name(Name, KubeConfig) when is_list(Name) and is_list(KubeConfig) ->
     AllClusters = proplists:get_value("clusters", KubeConfig),
-    [H | _] = lists:filter(fun(Cluster) -> proplists:get_value("name", Cluster) =:= Name end, AllClusters),
+    [H | _] = lists:filter(
+        fun(Cluster) -> proplists:get_value("name", Cluster) =:= Name end, AllClusters
+    ),
     proplists:get_value("cluster", H).
+
+get_cluster_name_from_context(ContextName, KubeConfig) ->
+    RelevantContext = get_context_for_name(ContextName, KubeConfig),
+    proplists:get_value("cluster", proplists:get_value("context", RelevantContext)).
 
 get_certificate(User, KubeConfig) when is_list(User) ->
     U = find_user(User, KubeConfig),
@@ -206,14 +213,18 @@ get_auth(User, KubeConfig) when is_list(User) and is_list(KubeConfig) ->
     U = find_user(User, KubeConfig),
     do_get_auth(proplists:to_map(U)).
 
-do_get_auth(#{"token" := T}) when is_list(T) -> #auth_token{token = list_to_binary(T)}.
+do_get_auth(#{"token" := T}) when is_list(T) -> #auth_token{token = list_to_binary(T)};
+do_get_auth(#{"client-certificate-data" := T, "client-key-data" := KeyData}) when is_list(T) -> 
+    #auth_cert{cert = list_to_binary(T), key = list_to_binary(KeyData)}.
 
 get_url(CurrentContext, KubeConfig) ->
-    RelevantCluster = get_cluster_for_name(CurrentContext, KubeConfig),
+    ClusterName = get_cluster_name_from_context(CurrentContext, KubeConfig),
+    RelevantCluster = get_cluster_for_name(ClusterName, KubeConfig),
     proplists:get_value("server", RelevantCluster).
 
 default_kube_cfg_path() ->
     HomeDir = os:getenv("HOME"),
     HomeDir ++ "/.kube/config".
- 
 
+get_current_context(KubeConfig) ->
+    proplists:get_value("current-context", KubeConfig).
