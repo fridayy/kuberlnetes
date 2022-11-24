@@ -10,6 +10,8 @@
 
 -author("bnjm").
 
+-include("kuberlnetes.hrl").
+
 -type options() :: #{
     server => server() | undefined
 }.
@@ -28,16 +30,9 @@
     body => map()
 }.
 
--record(auth_token, {token :: binary()}).
--record(auth_cert, {cert :: binary(), key :: binary()}).
--record(server, {
-    url :: string(),
-    ca_cert :: string(),
-    auth :: #auth_token{},
-    skip_tls_verify = false
-}).
-
 -type server() :: #server{}.
+
+-export_type([options/0, kube_cfg_options/0, mutation_request/0]).
 
 %% @doc
 %% Configures a server using the service account
@@ -61,6 +56,7 @@ from_config(Opts) ->
     KubeConfigPath = maps:get(path, Opts, default_kube_cfg_path()),
     [KubeConfig | _] = yamerl_constr:file(KubeConfigPath),
     SelectedContext = maps:get(context, Opts, get_current_context(KubeConfig)),
+    ClusterName = get_cluster_name_from_context(SelectedContext, KubeConfig),
     User = get_relevant_user(SelectedContext, KubeConfig),
     Auth = get_auth(User, KubeConfig),
     Cert = get_certificate(User, KubeConfig),
@@ -68,7 +64,9 @@ from_config(Opts) ->
     #server{
         url = Url,
         ca_cert = Cert,
-        auth = Auth
+        auth = Auth,
+        username = User,
+        clustername = ClusterName
     }.
 
 from_config() -> from_config(#{}).
@@ -86,7 +84,7 @@ get(Path, Opts) ->
     {ok, {{_, 200, _}, _, Body}} = httpc:request(
         get,
         {Server#server.url ++ Path, headers(Server)},
-        [{ssl, [{cacerts, [Server#server.ca_cert]}]}],
+        ssl_options(Server),
         []
     ),
     decode(Body).
@@ -104,7 +102,7 @@ post(#{path := Path, body := Body}, Opts) ->
     {ok, {{_, 201, _}, _, _}} = httpc:request(
         post,
         {Server#server.url ++ Path, headers(Server), "application/json", jsone:encode(Body)},
-        [{ssl, [{cacerts, [Server#server.ca_cert]}]}],
+        ssl_options(Server),
         []
     ),
     ok.
@@ -127,7 +125,7 @@ patch(#{path := Path, body := Body}, Opts) ->
             "application/merge-patch+json",
             jsone:encode(Body)
         },
-        [{ssl, [{cacerts, [Server#server.ca_cert]}]}],
+        ssl_options(Server),
         []
     ),
     ok.
@@ -151,6 +149,10 @@ headers(#server{auth = #auth_token{token = Token}}, AdditionalHeaders) ->
         {"Accept", "application/json"},
         {"Authorization", "Bearer " ++ Token}
     ] ++ AdditionalHeaders.
+
+ssl_options(#server{ca_cert = Cert}) when is_binary(Cert) ->
+    [{ssl, [{cacerts, [Cert]}]}].
+
 
 cert_from_file(Path) ->
     true = filelib:is_file(Path),
@@ -176,7 +178,7 @@ decode(Body) when is_list(Body) -> jsone:decode(erlang:list_to_binary(Body)).
 
 get_relevant_user(CurrentContext, KubeConfig) ->
     RelevantContext = get_context_for_name(CurrentContext, KubeConfig),
-    RelevantUser = proplists:get_value("user", proplists:get_value("context", RelevantContext)),
+    RelevantUser = proplists:get_value("user", RelevantContext),
     RelevantUser.
 
 %% todo: remove duplication
@@ -185,7 +187,7 @@ get_context_for_name(Name, KubeConfig) when is_list(Name) and is_list(KubeConfig
     [H | _] = lists:filter(
         fun(Context) -> proplists:get_value("name", Context) =:= Name end, AllContexts
     ),
-    H.
+    proplists:get_value("context", H).
 
 find_user(User, KubeConfig) ->
     Users = proplists:get_value("users", KubeConfig),
@@ -201,7 +203,7 @@ get_cluster_for_name(Name, KubeConfig) when is_list(Name) and is_list(KubeConfig
 
 get_cluster_name_from_context(ContextName, KubeConfig) ->
     RelevantContext = get_context_for_name(ContextName, KubeConfig),
-    proplists:get_value("cluster", proplists:get_value("context", RelevantContext)).
+    proplists:get_value("cluster", RelevantContext).
 
 get_certificate(User, KubeConfig) when is_list(User) ->
     U = find_user(User, KubeConfig),
@@ -215,7 +217,16 @@ get_auth(User, KubeConfig) when is_list(User) and is_list(KubeConfig) ->
 
 do_get_auth(#{"token" := T}) when is_list(T) -> #auth_token{token = list_to_binary(T)};
 do_get_auth(#{"client-certificate-data" := T, "client-key-data" := KeyData}) when is_list(T) -> 
-    #auth_cert{cert = list_to_binary(T), key = list_to_binary(KeyData)}.
+    #auth_cert{cert = list_to_binary(T), key = list_to_binary(KeyData)};
+do_get_auth(#{"client-certificate" := ClientCertPath, "client-key" := ClientKeyPath}) ->
+    Cert = cert_from_file(ClientCertPath),
+    BinaryKey = file:read_file(ClientKeyPath),
+    Key = public_key:pem_decode(BinaryKey),
+    #auth_cert{cert = Cert, key = Key};
+do_get_auth(#{"client-authority" := Path}) ->
+    Cert = cert_from_file(Path),
+    #auth_cert{cert = Cert}.
+    
 
 get_url(CurrentContext, KubeConfig) ->
     ClusterName = get_cluster_name_from_context(CurrentContext, KubeConfig),
