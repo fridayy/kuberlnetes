@@ -6,7 +6,15 @@
 %%%=============================================================================
 -module(kuberlnetes).
 
--export([in_cluster/0, get/2, post/2, patch/2, microtime_now/0, from_config/0, from_config/1]).
+-export([in_cluster/0,
+         get/2,
+         post/2,
+         patch/2,
+         delete/2,
+         microtime_now/0,
+         from_config/0,
+         from_config/1
+]).
 
 -author("bnjm").
 
@@ -146,6 +154,23 @@ do_patch(Path, Body, Server) when is_binary(Body) ->
         ssl_options(Server),
         []
     ).
+
+
+%% @doc
+%% Deletes the given resource
+%% @end
+-spec delete(Path, Opts) -> ok when
+      Path :: string(),
+      Opts :: options().
+delete(Path, Opts) ->
+   Server = get_server(Opts),
+   {ok, {{_, 200, _}, _, _Body}} = httpc:request(
+        get,
+        {Server#server.url ++ Path, headers(Server)},
+        ssl_options(Server),
+        []
+    ),
+   ok.
 
 %% @doc
 %% Returns the current datetime in the kubernetes MicroTime format
