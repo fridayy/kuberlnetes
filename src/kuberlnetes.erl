@@ -165,7 +165,7 @@ do_patch(Path, Body, Server) when is_binary(Body) ->
 delete(Path, Opts) ->
    Server = get_server(Opts),
    {ok, {{_, 200, _}, _, _Body}} = httpc:request(
-        get,
+        delete,
         {Server#server.url ++ Path, headers(Server)},
         ssl_options(Server),
         []
