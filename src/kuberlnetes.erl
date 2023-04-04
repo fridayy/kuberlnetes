@@ -99,18 +99,19 @@ get(Path, Opts) ->
     Opts :: options().
 post(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
-    do_post(Path, jsone:encode(Body), Server),
+    do_post(Path, jsone:encode(Body), Server, "application/json"),
     ok;
 
 post(#{path := Path, body := Body}, Opts) when is_binary(Body) ->
     Server = get_server(Opts),
-    do_post(Path, Body, Server),
+    ContentType = maps:get('content-type', Opts),
+    do_post(Path, Body, Server, ContentType),
     ok.
 
-do_post(Path, Body, Server) when is_binary(Body) ->
+do_post(Path, Body, Server, ContentType) when is_binary(Body) and is_list(ContentType) ->
     {ok, {{_, 201, _}, _, _}} = httpc:request(
         post,
-        {Server#server.url ++ Path, headers(Server), "application/json", Body},
+        {Server#server.url ++ Path, headers(Server), ContentType, Body},
         ssl_options(Server),
         []
     ).
