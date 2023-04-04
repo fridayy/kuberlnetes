@@ -27,7 +27,7 @@
 
 -type mutation_request() :: #{
     path => string(),
-    body => map()
+    body => map() | binary()
 }.
 
 -type server() :: #server{}.
@@ -97,15 +97,23 @@ get(Path, Opts) ->
 -spec post(Request, Opts) -> ok when
     Request :: mutation_request(),
     Opts :: options().
-post(#{path := Path, body := Body}, Opts) ->
+post(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
+    do_post(Path, jsone:encode(Body), Server),
+    ok;
+
+post(#{path := Path, body := Body}, Opts) when is_binary(Body) ->
+    Server = get_server(Opts),
+    do_post(Path, Body, Server),
+    ok.
+
+do_post(Path, Body, Server) when is_binary(Body) ->
     {ok, {{_, 201, _}, _, _}} = httpc:request(
         post,
-        {Server#server.url ++ Path, headers(Server), "application/json", jsone:encode(Body)},
+        {Server#server.url ++ Path, headers(Server), "application/json", Body},
         ssl_options(Server),
         []
-    ),
-    ok.
+    ).
 
 %% @doc
 %% Initiates a PATCH request against the configured kubernetes api server or
@@ -115,8 +123,17 @@ post(#{path := Path, body := Body}, Opts) ->
 -spec patch(Request, Opts) -> ok when
     Request :: mutation_request(),
     Opts :: options().
-patch(#{path := Path, body := Body}, Opts) ->
+patch(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
+    do_patch(Path, jsone:encode(Body), Server),
+    ok;
+
+patch(#{path := Path, body := Body}, Opts) when is_binary(Body) ->
+    Server = get_server(Opts),
+    do_patch(Path, Body, Server),
+    ok.
+
+do_patch(Path, Body, Server) when is_binary(Body) ->
     {ok, {{_, 200, _}, _, _}} = httpc:request(
         patch,
         {
@@ -127,8 +144,7 @@ patch(#{path := Path, body := Body}, Opts) ->
         },
         ssl_options(Server),
         []
-    ),
-    ok.
+    ).
 
 %% @doc
 %% Returns the current datetime in the kubernetes MicroTime format
