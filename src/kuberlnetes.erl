@@ -86,9 +86,7 @@ from_config() -> from_config(#{}).
 
 -spec from_raw(string()) -> server().
 from_raw(Url) -> 
-    #server{
-       url = Url
-      }.
+    #server{url = Url}.
 
 %% @doc
 %% Initiates a GET request against the configured kubernetes api server
@@ -132,7 +130,7 @@ do_post(Path, Body, Server, ContentType) when is_binary(Body) and is_list(Conten
         ssl_options(Server),
         []
     ),
-    map_http_response(201, Response).
+    map_http_response([200, 201, 202], Response).
 
 %% @doc
 %% Initiates a PATCH request against the configured kubernetes api server or
@@ -144,16 +142,14 @@ do_post(Path, Body, Server, ContentType) when is_binary(Body) and is_list(Conten
     Opts :: options().
 patch(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
-    do_patch(Path, jsone:encode(Body), Server),
-    ok;
+    do_patch(Path, jsone:encode(Body), Server);
 
 patch(#{path := Path, body := Body}, Opts) when is_binary(Body) ->
     Server = get_server(Opts),
-    do_patch(Path, Body, Server),
-    ok.
+    do_patch(Path, Body, Server).
 
 do_patch(Path, Body, Server) when is_binary(Body) ->
-    {ok, {{_, 200, _}, _, _}} = httpc:request(
+    Response = httpc:request(
         patch,
         {
             Server#server.url ++ Path,
@@ -163,7 +159,8 @@ do_patch(Path, Body, Server) when is_binary(Body) ->
         },
         ssl_options(Server),
         []
-    ).
+    ),
+    map_http_response([200, 201], Response).
 
 
 %% @doc
@@ -174,13 +171,13 @@ do_patch(Path, Body, Server) when is_binary(Body) ->
       Opts :: options().
 delete(Path, Opts) ->
    Server = get_server(Opts),
-   {ok, {{_, 200, _}, _, _Body}} = httpc:request(
+   Response = httpc:request(
         delete,
         {Server#server.url ++ Path, headers(Server)},
         ssl_options(Server),
         []
     ),
-   ok.
+   map_http_response([200, 202], Response).
 
 %% @doc
 %% Returns the current datetime in the kubernetes MicroTime format
@@ -302,10 +299,18 @@ get_current_context(KubeConfig) ->
 map_http_response(ExpectedStatus, {ok, {{_Proto, Status, _}, _Headers, Body}}) when ExpectedStatus =:= Status ->
     {ok, decode(Body)};
 
-map_http_response(201, {ok, {{_Proto, 409, _}, _Headers, _Body}}) ->
+map_http_response(ExpectedStatuses, {ok, {{_Proto, Status, _}, _Headers, Body}} = R) when is_list(ExpectedStatuses) ->
+    case lists:any(fun(S) -> S =:= Status end, ExpectedStatuses) of
+        true -> {ok, decode(Body)};
+        false -> 
+            [X | _] = ExpectedStatuses,
+            map_http_response(X, R)
+    end;
+
+map_http_response(_, {ok, {{_Proto, 409, _}, _Headers, _Body}}) ->
     {error, already_exists};
 
-map_http_response(200, {ok, {{_Proto, 404, _}, _Headers, _Body}}) ->
+map_http_response(_, {ok, {{_Proto, 404, _}, _Headers, _Body}}) ->
     {error, resource_not_found};
 
 map_http_response(ExpectedStatus, {ok, {{_, Status, _}, _, _Body}} = Response) when ExpectedStatus =/= Status ->
@@ -319,3 +324,4 @@ map_http_response(ExpectedStatus, {ok, {{_, Status, _}, _, _Body}} = Response) w
 map_http_response(_, Response) -> 
     ?LOG_ERROR(#{event => "unexpected_response", info => #{"response" => Response}}),
     {error, unknown_response}.
+
