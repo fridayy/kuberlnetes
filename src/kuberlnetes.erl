@@ -13,12 +13,14 @@
          delete/2,
          microtime_now/0,
          from_config/0,
-         from_config/1
+         from_config/1,
+         from_raw/1
 ]).
 
 -author("bnjm").
 
 -include("kuberlnetes.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -type options() :: #{
     server => server() | undefined
@@ -37,6 +39,9 @@
     path => string(),
     body => map() | binary()
 }.
+
+-type http_status_err() :: 300..600.
+-type resp_with_body() :: {ok, map()} | {error, http_status_err()}.
 
 -type server() :: #server{}.
 
@@ -79,6 +84,12 @@ from_config(Opts) ->
 
 from_config() -> from_config(#{}).
 
+-spec from_raw(string()) -> server().
+from_raw(Url) -> 
+    #server{
+       url = Url
+      }.
+
 %% @doc
 %% Initiates a GET request against the configured kubernetes api server
 %% or raises an error if the server is not configured correctly.
@@ -89,13 +100,13 @@ from_config() -> from_config(#{}).
     Body :: map().
 get(Path, Opts) ->
     Server = get_server(Opts),
-    {ok, {{_, 200, _}, _, Body}} = httpc:request(
+    Response = httpc:request(
         get,
         {Server#server.url ++ Path, headers(Server)},
         ssl_options(Server),
         []
     ),
-    decode(Body).
+    map_http_response(200, Response).
 
 %% @doc
 %% Initiates a POST request against the configured kubernetes api server or
@@ -107,22 +118,21 @@ get(Path, Opts) ->
     Opts :: options().
 post(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
-    do_post(Path, jsone:encode(Body), Server, "application/json"),
-    ok;
+    do_post(Path, jsone:encode(Body), Server, "application/json");
 
 post(#{path := Path, body := Body}, Opts) when is_binary(Body) ->
     Server = get_server(Opts),
     ContentType = maps:get('content-type', Opts),
-    do_post(Path, Body, Server, ContentType),
-    ok.
+    do_post(Path, Body, Server, ContentType).
 
 do_post(Path, Body, Server, ContentType) when is_binary(Body) and is_list(ContentType) ->
-    {ok, {{_, 201, _}, _, _}} = httpc:request(
+    Response = httpc:request(
         post,
         {Server#server.url ++ Path, headers(Server), ContentType, Body},
         ssl_options(Server),
         []
-    ).
+    ),
+    map_http_response(201, Response).
 
 %% @doc
 %% Initiates a PATCH request against the configured kubernetes api server or
@@ -190,11 +200,14 @@ headers(#server{auth = #auth_token{token = Token}}, AdditionalHeaders) ->
     [
         {"Accept", "application/json"},
         {"Authorization", "Bearer " ++ Token}
-    ] ++ AdditionalHeaders.
+    ] ++ AdditionalHeaders;
+headers(_, AdditionalHeaders) ->
+    AdditionalHeaders.
 
 ssl_options(#server{ca_cert = Cert}) when is_binary(Cert) ->
-    [{ssl, [{cacerts, [Cert]}]}].
+    [{ssl, [{cacerts, [Cert]}]}];
 
+ssl_options(_) -> [].
 
 cert_from_file(Path) ->
     true = filelib:is_file(Path),
@@ -281,3 +294,28 @@ default_kube_cfg_path() ->
 
 get_current_context(KubeConfig) ->
     proplists:get_value("current-context", KubeConfig).
+
+-spec map_http_response(ExpectedStatus, HttpResponse) -> Result when
+      ExpectedStatus :: 200 | 201,
+      HttpResponse :: any(),
+      Result :: resp_with_body().
+map_http_response(ExpectedStatus, {ok, {{_Proto, Status, _}, _Headers, Body}}) when ExpectedStatus =:= Status ->
+    {ok, decode(Body)};
+
+map_http_response(201, {ok, {{_Proto, 409, _}, _Headers, _Body}}) ->
+    {error, already_exists};
+
+map_http_response(200, {ok, {{_Proto, 404, _}, _Headers, _Body}}) ->
+    {error, resource_not_found};
+
+map_http_response(ExpectedStatus, {ok, {{_, Status, _}, _, _Body}} = Response) when ExpectedStatus =/= Status ->
+    ?LOG_ERROR(#{event => "unexpected_response", info => #{
+                                                           "expected_status" => ExpectedStatus,
+                                                           "actual_status" => Status,
+                                                           "response" => Response
+                                                          }}),
+    {error, Status};
+
+map_http_response(_, Response) -> 
+    ?LOG_ERROR(#{event => "unexpected_response", info => #{"response" => Response}}),
+    {error, unknown_response}.
