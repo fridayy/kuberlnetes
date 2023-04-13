@@ -14,7 +14,9 @@
          microtime_now/0,
          from_config/0,
          from_config/1,
-         from_raw/1
+         from_raw/1,
+         watch/1,
+         watch_req/2
 ]).
 
 -author("bnjm").
@@ -45,7 +47,7 @@
 
 -type server() :: #server{}.
 
--export_type([options/0, kube_cfg_options/0, mutation_request/0]).
+-export_type([options/0, kube_cfg_options/0, mutation_request/0, server/0]).
 
 %% @doc
 %% Configures a server using the service account
@@ -57,6 +59,8 @@ in_cluster() ->
     {ok, Token} = file:read_file("/var/run/secrets/kubernetes.io/serviceaccount/token"),
     #server{
         url = "https://" ++ Host ++ ":" ++ Port,
+        host = Host,
+        port = erlang:list_to_integer(Port),
         ca_cert = cert_from_file("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
         auth = #auth_token{token = Token}
     }.
@@ -74,8 +78,11 @@ from_config(Opts) ->
     Auth = get_auth(User, KubeConfig),
     Cert = get_certificate(User, KubeConfig),
     Url = get_url(SelectedContext, KubeConfig),
+    #{host := Host, port := Port} = uri_string:parse(Url),
     #server{
         url = Url,
+        host = Host,
+        port = Port,
         ca_cert = Cert,
         auth = Auth,
         username = User,
@@ -179,6 +186,21 @@ delete(Path, Opts) ->
     ),
    map_http_response([200, 202], Response).
 
+watch(_) ->
+    Server = from_config(),
+    supervisor:start_child(kuberlnetes_watch_sup, [self(), Server]).
+
+watch_req(Path, Opts) ->
+    Server = get_server(Opts),
+    {ok, Pid} = gun:open(Server#server.host, Server#server.port, #{
+                                                                   transport => tls,
+                                                                   protocols => [http],
+                                                                   tls_opts => [{verify, verify_none},
+                                                                                {cacerts, [Server#server.ca_cert]}
+                                                                   ]
+                                                                  }),
+    gun:get(Pid, Path, headers(Server, binary)).
+
 %% @doc
 %% Returns the current datetime in the kubernetes MicroTime format
 %% see: https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#microtime-v1-meta
@@ -193,6 +215,8 @@ microtime_now() ->
 
 %% internal functions
 headers(Server) -> headers(Server, []).
+headers(Server, binary) ->
+    lists:map(fun({K, V}) -> {erlang:list_to_binary(K), erlang:list_to_binary(V)} end, headers(Server));
 headers(#server{auth = #auth_token{token = Token}}, AdditionalHeaders) ->
     [
         {"Accept", "application/json"},
