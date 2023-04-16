@@ -18,10 +18,10 @@ init([]) ->
         period => 1
     },
     ChildSpecs = [
-                  #{
-                    id => kuberlnetes_watch_sup,
-                    start => {kuberlnetes_watch_sup, start_link, []},
-                    type => supervisor
-                   }
-                 ],
+        #{
+            id => kuberlnetes_watch_sup,
+            start => {kuberlnetes_watch_sup, start_link, []},
+            type => supervisor
+        }
+    ],
     {ok, {SupFlags, ChildSpecs}}.

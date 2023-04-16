@@ -1,4 +1,3 @@
-
 -type maybe(T) :: T | undefined.
 
 -record(auth_token, {token :: binary()}).

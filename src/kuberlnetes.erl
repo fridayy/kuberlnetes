@@ -6,17 +6,24 @@
 %%%=============================================================================
 -module(kuberlnetes).
 
--export([in_cluster/0,
-         get/2,
-         post/2,
-         patch/2,
-         delete/2,
-         microtime_now/0,
-         from_config/0,
-         from_config/1,
-         from_raw/1,
-         watch/1,
-         watch_req/2
+-export([
+    in_cluster/0,
+    get/2,
+    post/2,
+    patch/2,
+    delete/2,
+    microtime_now/0,
+    from_config/0,
+    from_config/1,
+    from_raw/1,
+    watch/1,
+    watch/3,
+    watch/4,
+    watch_close/1,
+    watch_test/0,
+    watches/0,
+    headers/1,
+    headers/2
 ]).
 
 -author("bnjm").
@@ -92,8 +99,9 @@ from_config(Opts) ->
 from_config() -> from_config(#{}).
 
 -spec from_raw(string()) -> server().
-from_raw(Url) -> 
-    #server{url = Url}.
+from_raw(Url) ->
+    #{host := Host, port := Port} = uri_string:parse(Url),
+    #server{url = Url, host = Host, port = Port}.
 
 %% @doc
 %% Initiates a GET request against the configured kubernetes api server
@@ -124,7 +132,6 @@ get(Path, Opts) ->
 post(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
     do_post(Path, jsone:encode(Body), Server, "application/json");
-
 post(#{path := Path, body := Body}, Opts) when is_binary(Body) ->
     Server = get_server(Opts),
     ContentType = maps:get('content-type', Opts),
@@ -150,7 +157,6 @@ do_post(Path, Body, Server, ContentType) when is_binary(Body) and is_list(Conten
 patch(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
     do_patch(Path, jsone:encode(Body), Server);
-
 patch(#{path := Path, body := Body}, Opts) when is_binary(Body) ->
     Server = get_server(Opts),
     do_patch(Path, Body, Server).
@@ -169,37 +175,34 @@ do_patch(Path, Body, Server) when is_binary(Body) ->
     ),
     map_http_response([200, 201], Response).
 
-
 %% @doc
 %% Deletes the given resource
 %% @end
 -spec delete(Path, Opts) -> ok when
-      Path :: string(),
-      Opts :: options().
+    Path :: string(),
+    Opts :: options().
 delete(Path, Opts) ->
-   Server = get_server(Opts),
-   Response = httpc:request(
+    Server = get_server(Opts),
+    Response = httpc:request(
         delete,
         {Server#server.url ++ Path, headers(Server)},
         ssl_options(Server),
         []
     ),
-   map_http_response([200, 202], Response).
+    map_http_response([200, 202], Response).
 
-watch(_) ->
-    Server = from_config(),
-    supervisor:start_child(kuberlnetes_watch_sup, [self(), Server]).
-
-watch_req(Path, Opts) ->
+watch(configmaps, Name, Opts) ->
+    watch(Opts#{name => Name, namespace => "default", kind => configmaps}).
+watch(configmaps, Name, Namespace, Opts) ->
+    watch(Opts#{name => Name, namespace => Namespace, kind => configmaps}).
+watch(Opts) ->
     Server = get_server(Opts),
-    {ok, Pid} = gun:open(Server#server.host, Server#server.port, #{
-                                                                   transport => tls,
-                                                                   protocols => [http],
-                                                                   tls_opts => [{verify, verify_none},
-                                                                                {cacerts, [Server#server.ca_cert]}
-                                                                   ]
-                                                                  }),
-    gun:get(Pid, Path, headers(Server, binary)).
+    supervisor:start_child(kuberlnetes_watch_sup, [self(), Server, Opts]).
+watch_close(Pid) ->
+    kuberlnetes_watch:stop(Pid).
+watches() ->
+    ChildSpecs = supervisor:which_children(kuberlnetes_watch_sup),
+    lists:map(fun({_,Pid, _, _}) -> Pid end, ChildSpecs).
 
 %% @doc
 %% Returns the current datetime in the kubernetes MicroTime format
@@ -216,7 +219,9 @@ microtime_now() ->
 %% internal functions
 headers(Server) -> headers(Server, []).
 headers(Server, binary) ->
-    lists:map(fun({K, V}) -> {erlang:list_to_binary(K), erlang:list_to_binary(V)} end, headers(Server));
+    lists:map(
+        fun({K, V}) -> {erlang:list_to_binary(K), erlang:list_to_binary(V)} end, headers(Server)
+    );
 headers(#server{auth = #auth_token{token = Token}}, AdditionalHeaders) ->
     [
         {"Accept", "application/json"},
@@ -227,8 +232,8 @@ headers(_, AdditionalHeaders) ->
 
 ssl_options(#server{ca_cert = Cert}) when is_binary(Cert) ->
     [{ssl, [{cacerts, [Cert]}]}];
-
-ssl_options(_) -> [].
+ssl_options(_) ->
+    [].
 
 cert_from_file(Path) ->
     true = filelib:is_file(Path),
@@ -292,7 +297,7 @@ get_auth(User, KubeConfig) when is_list(User) and is_list(KubeConfig) ->
     do_get_auth(proplists:to_map(U)).
 
 do_get_auth(#{"token" := T}) when is_list(T) -> #auth_token{token = list_to_binary(T)};
-do_get_auth(#{"client-certificate-data" := T, "client-key-data" := KeyData}) when is_list(T) -> 
+do_get_auth(#{"client-certificate-data" := T, "client-key-data" := KeyData}) when is_list(T) ->
     #auth_cert{cert = list_to_binary(T), key = list_to_binary(KeyData)};
 do_get_auth(#{"client-certificate" := ClientCertPath, "client-key" := ClientKeyPath}) ->
     Cert = cert_from_file(ClientCertPath),
@@ -302,7 +307,6 @@ do_get_auth(#{"client-certificate" := ClientCertPath, "client-key" := ClientKeyP
 do_get_auth(#{"client-authority" := Path}) ->
     Cert = cert_from_file(Path),
     #auth_cert{cert = Cert}.
-    
 
 get_url(CurrentContext, KubeConfig) ->
     ClusterName = get_cluster_name_from_context(CurrentContext, KubeConfig),
@@ -317,35 +321,39 @@ get_current_context(KubeConfig) ->
     proplists:get_value("current-context", KubeConfig).
 
 -spec map_http_response(ExpectedStatus, HttpResponse) -> Result when
-      ExpectedStatus :: 200 | 201,
-      HttpResponse :: any(),
-      Result :: resp_with_body().
-map_http_response(ExpectedStatus, {ok, {{_Proto, Status, _}, _Headers, Body}}) when ExpectedStatus =:= Status ->
+    ExpectedStatus :: 200 | 201,
+    HttpResponse :: any(),
+    Result :: resp_with_body().
+map_http_response(ExpectedStatus, {ok, {{_Proto, Status, _}, _Headers, Body}}) when
+    ExpectedStatus =:= Status
+->
     {ok, decode(Body)};
-
-map_http_response(ExpectedStatuses, {ok, {{_Proto, Status, _}, _Headers, Body}} = R) when is_list(ExpectedStatuses) ->
+map_http_response(ExpectedStatuses, {ok, {{_Proto, Status, _}, _Headers, Body}} = R) when
+    is_list(ExpectedStatuses)
+->
     case lists:any(fun(S) -> S =:= Status end, ExpectedStatuses) of
-        true -> {ok, decode(Body)};
-        false -> 
+        true ->
+            {ok, decode(Body)};
+        false ->
             [X | _] = ExpectedStatuses,
             map_http_response(X, R)
     end;
-
 map_http_response(_, {ok, {{_Proto, 409, _}, _Headers, _Body}}) ->
     {error, already_exists};
-
 map_http_response(_, {ok, {{_Proto, 404, _}, _Headers, _Body}}) ->
     {error, resource_not_found};
-
-map_http_response(ExpectedStatus, {ok, {{_, Status, _}, _, _Body}} = Response) when ExpectedStatus =/= Status ->
-    ?LOG_ERROR(#{event => "unexpected_response", info => #{
-                                                           "expected_status" => ExpectedStatus,
-                                                           "actual_status" => Status,
-                                                           "response" => Response
-                                                          }}),
+map_http_response(ExpectedStatus, {ok, {{_, Status, _}, _, _Body}} = Response) when
+    ExpectedStatus =/= Status
+->
+    ?LOG_ERROR(#{
+        event => "unexpected_response",
+        info => #{
+            "expected_status" => ExpectedStatus,
+            "actual_status" => Status,
+            "response" => Response
+        }
+    }),
     {error, Status};
-
-map_http_response(_, Response) -> 
+map_http_response(_, Response) ->
     ?LOG_ERROR(#{event => "unexpected_response", info => #{"response" => Response}}),
     {error, unknown_response}.
-
