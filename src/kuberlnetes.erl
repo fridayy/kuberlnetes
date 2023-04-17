@@ -8,6 +8,7 @@
 
 -export([
     in_cluster/0,
+    get/1,
     get/2,
     post/2,
     patch/2,
@@ -40,7 +41,9 @@
     path => string(),
     %% the context to be selected
     %% defaults to "current-context"
-    context => string()
+    context => string(),
+    %% cache the server config in ets (default: true)
+    cache => boolean()
 }.
 
 -type mutation_request() :: #{
@@ -60,16 +63,23 @@
 %% @end
 -spec in_cluster() -> server().
 in_cluster() ->
+    in_cluster(#{}).
+
+-spec in_cluster(Opts) -> server() when
+      Opts :: kube_cfg_options().
+in_cluster(Opts) ->
     Host = os:getenv("KUBERNETES_SERVICE_HOST"),
     Port = os:getenv("KUBERNETES_SERVICE_PORT"),
     {ok, Token} = file:read_file("/var/run/secrets/kubernetes.io/serviceaccount/token"),
-    #server{
+    ServerConfig = #server{
         url = "https://" ++ Host ++ ":" ++ Port,
         host = Host,
         port = erlang:list_to_integer(Port),
         ca_cert = cert_from_file("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
         auth = #auth_token{token = Token}
-    }.
+    },
+    maybe_cache_srv_config(ServerConfig, Opts),
+    ServerConfig.
 
 %% @doc
 %% Loads the current-context from ~/.kube/config
@@ -85,7 +95,7 @@ from_config(Opts) ->
     Cert = get_certificate(User, KubeConfig),
     Url = get_url(SelectedContext, KubeConfig),
     #{host := Host, port := Port} = uri_string:parse(Url),
-    #server{
+    ServerConfig = #server{
         url = Url,
         host = Host,
         port = Port,
@@ -93,7 +103,9 @@ from_config(Opts) ->
         auth = Auth,
         username = User,
         clustername = ClusterName
-    }.
+    },
+    maybe_cache_srv_config(ServerConfig, Opts),
+    ServerConfig.
 
 from_config() -> from_config(#{}).
 
@@ -102,11 +114,12 @@ from_raw(Url) ->
     #{host := Host, port := Port} = uri_string:parse(Url),
     #server{url = Url, host = Host, port = Port}.
 
+
 %% @doc
 %% Initiates a GET request against the configured kubernetes api server
 %% or raises an error if the server is not configured correctly.
 %% @end
--spec get(Path, Opts) -> Body when
+-spec get(Path, Opts) -> {ok, Body} when
     Path :: string(),
     Opts :: options(),
     Body :: map().
@@ -120,14 +133,21 @@ get(Path, Opts) ->
     ),
     map_http_response(200, Response).
 
+-spec get(Path) -> {ok, Body} when
+      Path :: string(),
+      Body :: map().
+get(Path) ->
+    get(Path, #{}).
+
 %% @doc
 %% Initiates a POST request against the configured kubernetes api server or
 %% raises an error if the server is not configured correctly.
 %% see: server()
 %% @end
--spec post(Request, Opts) -> ok when
+-spec post(Request, Opts) -> {ok, Body} when
     Request :: mutation_request(),
-    Opts :: options().
+    Opts :: options(),
+    Body :: map().
 post(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
     do_post(Path, jsone:encode(Body), Server, "application/json");
@@ -139,7 +159,12 @@ post(#{path := Path, body := Body}, Opts) when is_binary(Body) ->
 do_post(Path, Body, Server, ContentType) when is_binary(Body) and is_list(ContentType) ->
     Response = httpc:request(
         post,
-        {Server#server.url ++ Path, headers(Server), ContentType, Body},
+        {
+         Server#server.url ++ Path,
+         headers(Server), 
+         ContentType, 
+         Body
+        },
         ssl_options(Server),
         []
     ),
@@ -150,9 +175,10 @@ do_post(Path, Body, Server, ContentType) when is_binary(Body) and is_list(Conten
 %% raises an error if the server is not configured correctly.
 %% see: server()
 %% @end
--spec patch(Request, Opts) -> ok when
+-spec patch(Request, Opts) -> {ok, Body} when
     Request :: mutation_request(),
-    Opts :: options().
+    Opts :: options(),
+    Body :: map().
 patch(#{path := Path, body := Body}, Opts) when is_map(Body) ->
     Server = get_server(Opts),
     do_patch(Path, jsone:encode(Body), Server);
@@ -166,8 +192,8 @@ do_patch(Path, Body, Server) when is_binary(Body) ->
         {
             Server#server.url ++ Path,
             headers(Server),
-            "application/merge-patch+json",
-            jsone:encode(Body)
+            "application/strategic-merge-patch+json",
+            Body
         },
         ssl_options(Server),
         []
@@ -177,9 +203,10 @@ do_patch(Path, Body, Server) when is_binary(Body) ->
 %% @doc
 %% Deletes the given resource
 %% @end
--spec delete(Path, Opts) -> ok when
+-spec delete(Path, Opts) -> {ok, Body} when
     Path :: string(),
-    Opts :: options().
+    Opts :: options(),
+    Body :: map().
 delete(Path, Opts) ->
     Server = get_server(Opts),
     Response = httpc:request(
@@ -243,14 +270,22 @@ cert_from_file(Path) ->
 cert_from_b64(CertData) when is_list(CertData) ->
     DecodedCert = base64:decode(CertData),
     [{'Certificate', Data, _}] = public_key:pem_decode(DecodedCert),
-    Data.
+    Data;
+cert_from_b64(undefined) -> undefined.
 
 get_server(Opts) ->
     OptsServer = maps:get(server, Opts, undefined),
     case OptsServer of
-        undefined -> error(no_server_configured);
+        undefined -> server_cfg_from_cache_or_error();
         Else when is_record(Else, server) -> Else;
         _ -> error(invalid_server)
+    end.
+
+server_cfg_from_cache_or_error() ->
+    case ets:lookup(?SERVER_CFG_TAB, cached) of
+        [] ->
+            error(no_server_config);
+        [{cached, ServerConfig}] -> ServerConfig
     end.
 
 decode(Body) when is_binary(Body) -> jsone:decode(Body);
@@ -305,7 +340,16 @@ do_get_auth(#{"client-certificate" := ClientCertPath, "client-key" := ClientKeyP
     #auth_cert{cert = Cert, key = Key};
 do_get_auth(#{"client-authority" := Path}) ->
     Cert = cert_from_file(Path),
-    #auth_cert{cert = Cert}.
+    #auth_cert{cert = Cert};
+do_get_auth(#{"exec" := ExecProps}) ->
+    Command = proplists:get_value("command", ExecProps),
+    Args = proplists:get_value("args", ExecProps),
+    FullCmd = string:join([Command | Args], " "),
+    ExecResult = os:cmd(FullCmd),
+    #{<<"kind">> := <<"ExecCredential">>, 
+      <<"status">> := #{<<"token">> := Token}
+    } = jsone:decode(erlang:list_to_binary(ExecResult)),
+    #auth_token{token = Token}.
 
 get_url(CurrentContext, KubeConfig) ->
     ClusterName = get_cluster_name_from_context(CurrentContext, KubeConfig),
@@ -356,3 +400,12 @@ map_http_response(ExpectedStatus, {ok, {{_, Status, _}, _, _Body}} = Response) w
 map_http_response(_, Response) ->
     ?LOG_ERROR(#{event => "unexpected_response", info => #{"response" => Response}}),
     {error, unknown_response}.
+
+maybe_cache_srv_config(ServerConfig, Opts) ->
+    DoCache = maps:get(cache, Opts, true),
+    case DoCache of
+        true -> ets:insert(?SERVER_CFG_TAB, {cached, ServerConfig}),
+                ?LOG_DEBUG(#{event => "kuberlnetes_cached_srv_cfg"}),
+                true;
+        false -> false 
+    end.

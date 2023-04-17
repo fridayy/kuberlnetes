@@ -12,3 +12,5 @@
     username :: maybe(string()),
     clustername :: maybe(string())
 }).
+
+-define(SERVER_CFG_TAB, kuberlnetes_server_cfg).
