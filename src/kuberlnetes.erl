@@ -20,7 +20,6 @@
     watch/3,
     watch/4,
     watch_close/1,
-    watch_test/0,
     watches/0,
     headers/1,
     headers/2

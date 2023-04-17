@@ -99,7 +99,7 @@ handle_info({gun_up, ConnPid, http}, #state{conn_timeout_timer_ref = TimerRef} =
     {noreply, State#state{conn_pid = ConnPid}};
 handle_info(connection_timeout, State) ->
     %% inform owner and stop normally
-    State#state.owner ! {kuberlnetes_watch, {error, connection_timeout}},
+    State#state.owner ! {kuberlnetes_watch_error, connection_timeout},
     {stop, normal, State};
 handle_info({gun_data, _ConnPid, _Ref, nofin, Data}, State) ->
     M = jsone:decode(Data),
@@ -116,14 +116,14 @@ handle_info({gun_data, ConnPid, _Ref, fin, _}, #state{last_resource_version = Re
 handle_info({gun_response, _ConnPid, _Ref, nofin, 200, Headers}, State) ->
     case proplists:get_value(<<"transfer-encoding">>, Headers) of
          <<"chunked">> -> {noreply, State};
-         _ -> State#state.owner ! {kuberlnetes_watch, {error, not_chunked}},
+         _ -> State#state.owner ! {kuberlnetes_watch_error, not_chunked},
               {stop, normal, State}
     end;
 handle_info({gun_response, _ConnPid, _Ref, _, Status, _}, State) ->
     ?LOG_ERROR(#{error => "kuberlnetes_watch_invalid_resp", info => 
                  #{"message" => "Unexpected response from API server",
                   "status" => Status}}),
-    State#state.owner !{kuberlnetes_watch, {error, invalid_response}},
+    State#state.owner ! {kuberlnetes_watch_error, invalid_response},
     {stop, normal, State};
 handle_info({gun_down, _ConnPif, http, closed, _}, State) ->
     %% the api server apperently closed the connection
