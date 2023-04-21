@@ -8,7 +8,8 @@
 all() -> 
   [
    receives_expected_events,
-   closes_watch_if_owner_dies
+   closes_watch_if_owner_dies,
+   handles_gone_messages_appropriately
   ].
 
 init_per_suite(Config) ->
@@ -44,6 +45,7 @@ closes_watch_if_owner_dies(_) ->
   exit(OwnerPid, byebye),
   ct:sleep(100),
   ?assertEqual([], kuberlnetes:watches()).
+
 receives_expected_events(_) ->
   {ok, _Pid} = kuberlnetes:watch(#{
                       server => kuberlnetes:from_raw(test_url()),
@@ -57,6 +59,20 @@ receives_expected_events(_) ->
                 {kuberlnetes_watch, modified, _},
                 {kuberlnetes_watch, modified, #{<<"metadata">> := #{
                                                                     <<"resourceVersion">> := <<"654321">>}}}
+               ], R).
+
+handles_gone_messages_appropriately(_) ->
+  {ok, _Pid} = kuberlnetes:watch(#{
+                      server => kuberlnetes:from_raw(test_url()),
+                      kind => configmaps,
+                      name => "gone",
+                      namespace => "default"
+                     }),
+  R = await(2),
+  ?assertMatch([
+                {kuberlnetes_watch, added, _},
+                {kuberlnetes_watch, modified, #{<<"metadata">> := #{
+                                                                    <<"resourceVersion">> := <<"999999">>}}}
                ], R).
 
 %% support

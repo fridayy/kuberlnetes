@@ -105,20 +105,30 @@ handle_info({gun_data, _ConnPid, _Ref, nofin, Data}, State) ->
     M = jsone:decode(Data),
     NewState = handle_data(M, State),
     {noreply, NewState};
-handle_info({gun_data, ConnPid, _Ref, fin, _}, #state{last_resource_version = ResourceVersion} = State) ->
-    %% chunked transfer ended - restart from latest bookmark
-    ?LOG_WARNING(#{event => "kuberlnetes_watch_fin", info => #{
-                                                               "message" => "api server sent FIN - restarting from bookmark",
-                                                               "bookmark" => ResourceVersion
-                                                              }}),
-    watch_req(ConnPid, State),
-    {noreply, State};
+handle_info({gun_data, ConnPid, _Ref, fin, Data}, #state{last_resource_version = ResourceVersion} = State) ->
+    %% chunked transfer ended - restart from latest bookmark if the received
+    %% message is not a "gone" message
+    case is_gone_message(Data) of
+        true ->
+            ?LOG_WARNING(#{event => "kuberlnetes_watch_gone", info => #{
+                                                                "message" => "Current bookmark does not match latest resource version",
+                                                                "bookmark" => ResourceVersion,
+                                                                "action" => reset_cache
+                                                               }}),
+            NewState = State#state{last_resource_version = undefined},
+            watch_req(ConnPid, NewState),
+            {noreply, NewState};
+        false ->
+            watch_req(ConnPid, State),
+            {noreply, State}
+    end;
 handle_info({gun_response, _ConnPid, _Ref, nofin, 200, Headers}, State) ->
     case proplists:get_value(<<"transfer-encoding">>, Headers) of
          <<"chunked">> -> {noreply, State};
          _ -> State#state.owner ! {kuberlnetes_watch_error, not_chunked},
               {stop, normal, State}
     end;
+
 handle_info({gun_response, _ConnPid, _Ref, _, Status, _}, State) ->
     ?LOG_ERROR(#{error => "kuberlnetes_watch_invalid_resp", info => 
                  #{"message" => "Unexpected response from API server",
@@ -154,7 +164,6 @@ terminate(Reason, #state{conn_pid = ConnPid, owner_ref = OwnerRef}) ->
     ok.
 
 %% private parts
-
 handle_data(#{<<"type">> := <<"BOOKMARK">>, <<"object">> := Obj}, State) ->
     ?LOG_DEBUG(#{event => "kuberlnetes_watch_bookmark_recv"}),
     #{<<"metadata">> := #{<<"resourceVersion">> := Rv}} = Obj,
@@ -166,6 +175,28 @@ handle_data(#{<<"type">> := T} = Data, #state{owner = Owner} = State) ->
     State;
 handle_data(_, _) ->
     error(invalid_response).
+
+is_gone_message(<<>>) -> false;
+is_gone_message(Binary) when is_binary(Binary) ->
+    case jsone:try_decode(Binary) of
+        {ok, Map, _} -> 
+            is_gone_message(Map);
+        {ok, Map} ->
+            is_gone_message(Map);
+        {error, R} ->
+            ?LOG_WARNING(#{event => "kuberlnetes_unprocessable_entity", info => #{
+                                                                                  entity => Binary,
+                                                                                  reason => R
+                                                                                 }}),
+            false;
+        R -> ?LOG_WARNING(#{event => "kuberlnetes_unknown_jsone_response", info => #{
+                                                                                     entity => Binary,
+                                                                                     reponse => R
+                                                                                    }}),
+             false
+    end;
+is_gone_message(#{<<"type">> := <<"ERROR">>, <<"object">> := #{<<"code">> := 410}}) -> true;
+is_gone_message(_) -> false.
 
 to_atom_type(<<"ADDED">>) -> added;
 to_atom_type(<<"MODIFIED">>) -> modified;
