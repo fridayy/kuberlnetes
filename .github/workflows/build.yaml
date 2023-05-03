@@ -1,0 +1,24 @@
+name: build
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: erlang:25-slim
+    steps:
+      - name: Install prerequisites
+        run: |
+          apt-get -y update
+          apt-get install -y make git
+      - uses: actions/checkout@v3
+      - name: Build and Test
+        run: make

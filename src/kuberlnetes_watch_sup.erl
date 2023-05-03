@@ -24,6 +24,12 @@ init([]) ->
         restart => transient,
         type => worker
     },
-    {ok, {#{strategy => simple_one_for_one, 
-            intesity => 3,
-            period => 10}, [Child]}}.
+    {ok,
+        {
+            #{
+                strategy => simple_one_for_one,
+                intesity => 3,
+                period => 10
+            },
+            [Child]
+        }}.

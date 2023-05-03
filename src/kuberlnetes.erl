@@ -18,8 +18,6 @@
     from_config/1,
     from_raw/1,
     watch/1,
-    watch/3,
-    watch/4,
     watch_close/1,
     watches/0,
     headers/1,
@@ -66,7 +64,7 @@ in_cluster() ->
     in_cluster(#{}).
 
 -spec in_cluster(Opts) -> server() when
-      Opts :: kube_cfg_options().
+    Opts :: kube_cfg_options().
 in_cluster(Opts) ->
     Host = os:getenv("KUBERNETES_SERVICE_HOST"),
     Port = os:getenv("KUBERNETES_SERVICE_PORT"),
@@ -114,7 +112,6 @@ from_raw(Url) ->
     #{host := Host, port := Port} = uri_string:parse(Url),
     #server{url = Url, host = Host, port = Port}.
 
-
 %% @doc
 %% Initiates a GET request against the configured kubernetes api server
 %% or raises an error if the server is not configured correctly.
@@ -134,8 +131,8 @@ get(Path, Opts) ->
     map_http_response(200, Response).
 
 -spec get(Path) -> {ok, Body} when
-      Path :: string(),
-      Body :: map().
+    Path :: string(),
+    Body :: map().
 get(Path) ->
     get(Path, #{}).
 
@@ -160,10 +157,10 @@ do_post(Path, Body, Server, ContentType) when is_binary(Body) and is_list(Conten
     Response = httpc:request(
         post,
         {
-         Server#server.url ++ Path,
-         headers(Server), 
-         ContentType, 
-         Body
+            Server#server.url ++ Path,
+            headers(Server),
+            ContentType,
+            Body
         },
         ssl_options(Server),
         []
@@ -217,18 +214,31 @@ delete(Path, Opts) ->
     ),
     map_http_response([200, 202], Response).
 
-watch(configmaps, Name, Opts) ->
-    watch(Opts#{name => Name, namespace => "default", kind => configmaps}).
-watch(configmaps, Name, Namespace, Opts) ->
-    watch(Opts#{name => Name, namespace => Namespace, kind => configmaps}).
+-spec watch(Opts) -> Result when
+    Opts :: kuberlnetes_watch:watch_opts(),
+    Result :: {ok, pid()}.
 watch(Opts) ->
     Server = get_server(Opts),
-    supervisor:start_child(kuberlnetes_watch_sup, [self(), Server, Opts]).
+    kuberlnetes_watch:watch(Server, Opts).
+
+%% @doc
+%% Closes an active watch process when not running in a supervision
+%% tree.
+%% @end
+-spec watch_close(Pid) -> Result when
+    Pid :: pid(),
+    Result :: ok.
 watch_close(Pid) ->
     kuberlnetes_watch:stop(Pid).
+
+%% @doc
+%% Returns all currently active watch processes
+%% @end
+-spec watches() -> Result when
+    Result :: list(pid()).
 watches() ->
     ChildSpecs = supervisor:which_children(kuberlnetes_watch_sup),
-    lists:map(fun({_,Pid, _, _}) -> Pid end, ChildSpecs).
+    lists:map(fun({_, Pid, _, _}) -> Pid end, ChildSpecs).
 
 %% @doc
 %% Returns the current datetime in the kubernetes MicroTime format
@@ -271,7 +281,8 @@ cert_from_b64(CertData) when is_list(CertData) ->
     DecodedCert = base64:decode(CertData),
     [{'Certificate', Data, _}] = public_key:pem_decode(DecodedCert),
     Data;
-cert_from_b64(undefined) -> undefined.
+cert_from_b64(undefined) ->
+    undefined.
 
 get_server(Opts) ->
     OptsServer = maps:get(server, Opts, undefined),
@@ -285,7 +296,8 @@ server_cfg_from_cache_or_error() ->
     case ets:lookup(?SERVER_CFG_TAB, cached) of
         [] ->
             error(no_server_config);
-        [{cached, ServerConfig}] -> ServerConfig
+        [{cached, ServerConfig}] ->
+            ServerConfig
     end.
 
 decode(Body) when is_binary(Body) -> jsone:decode(Body);
@@ -346,8 +358,9 @@ do_get_auth(#{"exec" := ExecProps}) ->
     Args = proplists:get_value("args", ExecProps),
     FullCmd = string:join([Command | Args], " "),
     ExecResult = os:cmd(FullCmd),
-    #{<<"kind">> := <<"ExecCredential">>, 
-      <<"status">> := #{<<"token">> := Token}
+    #{
+        <<"kind">> := <<"ExecCredential">>,
+        <<"status">> := #{<<"token">> := Token}
     } = jsone:decode(erlang:list_to_binary(ExecResult)),
     #auth_token{token = Token}.
 
@@ -404,8 +417,10 @@ map_http_response(_, Response) ->
 maybe_cache_srv_config(ServerConfig, Opts) ->
     DoCache = maps:get(cache, Opts, true),
     case DoCache of
-        true -> ets:insert(?SERVER_CFG_TAB, {cached, ServerConfig}),
-                ?LOG_DEBUG(#{event => "kuberlnetes_cached_srv_cfg"}),
-                true;
-        false -> false 
+        true ->
+            ets:insert(?SERVER_CFG_TAB, {cached, ServerConfig}),
+            ?LOG_DEBUG(#{event => "kuberlnetes_cached_srv_cfg"}),
+            true;
+        false ->
+            false
     end.
