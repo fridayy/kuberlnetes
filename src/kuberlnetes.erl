@@ -253,7 +253,7 @@ microtime_now() ->
         ])
     ).
 
-%% private parts 
+%% private parts
 headers(Server) -> headers(Server, []).
 headers(Server, binary) ->
     lists:map(
