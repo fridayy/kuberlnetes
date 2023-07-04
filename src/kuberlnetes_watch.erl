@@ -2,7 +2,9 @@
 %%% @author bnjm
 %%% @copyright (C) 2023, leftshift.one software gmbh
 %%% @doc
-%%%
+%%% gen_server process providing kubernetes watch functionality. Supervised 
+%%% by kuberlnetes_watch_sup - each process represents an open watch for a 
+%%% given resource.
 %%% @end
 %%% Created : 13. Apr 2023
 %%%-------------------------------------------------------------------

@@ -81,6 +81,7 @@ in_cluster(Opts) ->
 
 %% @doc
 %% Loads the current-context from ~/.kube/config
+%% @end
 -spec from_config(Options) -> server() when
     Options :: kube_cfg_options().
 from_config(Opts) ->
@@ -252,7 +253,7 @@ microtime_now() ->
         ])
     ).
 
-%% internal functions
+%% private parts 
 headers(Server) -> headers(Server, []).
 headers(Server, binary) ->
     lists:map(
